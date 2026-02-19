@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://sp.theazizi.ir" target="_blank"><strong>🚀 Live Demo</strong></a> 
+  <a href="https://github.com/TheGreatAzizi/Secure-Pastebin-Self-Hosted/" target="_blank"><strong>✨ Self-Hosted Ver</strong></a> 
 </p>
 
 <p align="center">
