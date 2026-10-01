@@ -1,0 +1,13 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cloudflare:
+        patterns: ['wrangler', 'miniflare', '@cloudflare/*']
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
