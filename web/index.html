@@ -146,9 +146,21 @@
     </main>
 
     <footer class="footer">
-      <p>No account. No tracking. Just a note.</p>
-      <a href="https://github.com/koljasagorski/Secure-Pastebin-Cloudflare-Worker" target="_blank" rel="noopener noreferrer">Open source <span aria-hidden="true">↗</span></a>
-      <p class="footer-encryption">Encrypted in your browser with AES-256-GCM. Message content is stored only as ciphertext; your key and password are never sent to the server. Optional passwords use PBKDF2-SHA-256 with 600,000 iterations.</p>
+      <section class="footer-security" aria-labelledby="footerSecurityTitle">
+        <div class="footer-security-heading">
+          <p class="security-label">Encrypted in your browser</p>
+          <h2 id="footerSecurityTitle">Private words deserve a private link.</h2>
+        </div>
+        <div class="footer-security-copy">
+          <p><strong>AES-256-GCM encrypts your message on your device.</strong> We store the encrypted text; your key and password are never sent to our server.</p>
+          <p class="security-detail">Optional passwords: PBKDF2-SHA-256 with 600,000 iterations.</p>
+          <a class="security-link" href="https://github.com/koljasagorski/Secure-Pastebin-Cloudflare-Worker/blob/main/SECURITY.md" target="_blank" rel="noopener noreferrer">How your message is protected <span aria-hidden="true">↗</span></a>
+        </div>
+      </section>
+      <div class="footer-bottom">
+        <p>No account. No tracking. Just a note.</p>
+        <a href="https://github.com/koljasagorski/Secure-Pastebin-Cloudflare-Worker" target="_blank" rel="noopener noreferrer">Open source <span aria-hidden="true">↗</span></a>
+      </div>
     </footer>
   </div>
 
