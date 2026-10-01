@@ -15,6 +15,11 @@ export function decode(value) {
   return bytes;
 }
 
+export async function createReadToken() {
+  const token = crypto.getRandomValues(new Uint8Array(32));
+  return { readToken: encode(token), readTokenHash: encode(await crypto.subtle.digest('SHA-256', token)) };
+}
+
 async function derive(password, salt) {
   const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveKey']);
   return crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: ITERATIONS, hash: 'SHA-256' },
@@ -36,14 +41,19 @@ export async function encrypt(text, password = null) {
 }
 
 export function parseFragment(fragment) {
+  if (fragment.length > 256) throw new Error('Invalid share link');
   const parts = fragment.replace(/^#/, '').split(':');
+  const protectedLink = parts[0] === 'v3';
+  if (protectedLink) parts.shift();
+  const readToken = protectedLink ? parts.splice(2, 1)[0] : undefined;
+  if (protectedLink && (!readToken || decode(readToken).length !== 32)) throw new Error('Invalid read token');
   const [id, secret, mode] = parts;
   if (!/^[a-f0-9]{32}$/.test(id) || (parts.length !== 2 && parts.length !== 3) || (parts.length === 3 && mode !== 'pwd2')) {
     throw new Error('Invalid or unsupported share link');
   }
   const hasPassword = mode === 'pwd2';
   if (decode(secret).length !== (hasPassword ? 16 : 32)) throw new Error('Invalid share link');
-  return { id, secret, hasPassword };
+  return { id, secret, hasPassword, ...(protectedLink ? { readToken } : {}) };
 }
 
 export async function decrypt(envelope, secret, password = null) {

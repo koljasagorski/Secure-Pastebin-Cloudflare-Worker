@@ -8,11 +8,15 @@ Alternative address: [secure-pastebin.vwcampermieten.workers.dev](https://secure
 
 A small Cloudflare Worker with browser-side encryption, optional password protection, and one-time retrieval. No account, analytics, third-party scripts, or external fonts are required. This maintained fork builds on [TheGreatAzizi's original project](https://github.com/TheGreatAzizi/Secure-Pastebin-Cloudflare-Worker).
 
+The interface focuses on writing and sharing: a large editor, a compact settings column, and separate reading and sharing views. It adapts to small screens, supports keyboard navigation and light/dark modes, and serves its font locally.
+
+![Paste interface with a message editor and sharing settings](docs/interface.png)
+
 ## Using it
 
 1. Enter a message (up to **64 KiB of UTF-8 text**) and choose an expiration: 1 hour, 1 day, 1 week, or 30 days.
 2. Optionally enable a password (at least 12 characters) and **Burn after reading**.
-3. Select **Encrypt & Save** and send the complete link to the recipient. Share any password separately.
+3. Select **Create private link** and send the complete link to the recipient. Share any password separately.
 4. The recipient selects **Open message**, then enters the password if required.
 
 Whitespace, code, and Unicode text are preserved. Message text is displayed as text, never rendered as HTML. Losing the complete link means losing access.
@@ -22,21 +26,25 @@ Whitespace, code, and Unicode text are preserved. Message text is displayed as t
 - Encryption and decryption use the browser's Web Crypto API: **AES-256-GCM**, a fresh 12-byte IV, and a 256-bit key.
 - Without a password, the browser generates a random key. With a password, **PBKDF2-HMAC-SHA-256 with 600,000 iterations** derives the key from a random 16-byte salt.
 - The key, or password salt, stays in the URL fragment after `#`. Browsers do not include that fragment in HTTP requests. Passwords and plaintext are never submitted by the application.
-- Cloudflare D1 stores ciphertext, a random ID, creation/expiration timestamps, and the password/burn flags. The production database uses Cloudflare's EU jurisdiction.
-- API and page responses use `Cache-Control: no-store`, a restrictive script policy, `Referrer-Policy: no-referrer`, and anti-framing headers.
+- New links also contain an **independent random 256-bit read token**. Creation sends only its SHA-256 digest. Retrieval sends the token in the POST body over HTTPS; the server checks its digest within the same SQL statement that reads or deletes the message. Knowing the ID or stored digest is insufficient to retrieve or consume a new message. The read token is separate from the encryption key and cannot decrypt the content.
+- Cloudflare D1 stores ciphertext, a random ID, creation/expiration timestamps, the password/burn flags, and the read-token digest. The production database uses Cloudflare's EU jurisdiction.
+- Public HTTP requests redirect to HTTPS. Responses use `Cache-Control: no-store`, CSP without inline scripts/styles, Trusted Types enforcement in supporting browsers, cross-origin isolation, `Referrer-Policy: no-referrer`, and anti-framing headers. Clipboard reading and unused device APIs are disabled; copying still works.
+- After successful retrieval, the app removes the fragment from the current address/history entry, including while waiting for a password. It clears message/link fields on navigation and reloads restored back/forward-cache pages. These measures reduce persistence; they cannot erase earlier copies from browser sync, extensions, memory, or sharing services. The only application preference in local storage is the selected theme.
 - The application logs only a generic failure event, with invocation logs and tracing disabled. This does **not** mean the hosting provider has no network metadata or operational logs.
 
 ### What “burn after reading” means
 
 The first explicit retrieval atomically deletes the ciphertext from the active database and returns it in one SQL statement. Concurrent requests cannot both retrieve it. Loading the page, link previews using GET/HEAD, and opening the password prompt do not cause an additional retrieval.
 
-Deletion happens **before browser decryption**. A failed network response or lost tab can therefore lose a one-time message. A wrong password can be retried in the same tab because the ciphertext remains in memory. Anyone with the message ID can consume a one-time message even without its key; recipients can also save or copy the plaintext.
+Deletion happens **before browser decryption**. A failed network response or lost tab can therefore lose a one-time message. A wrong password can be retried in the same tab because the ciphertext remains in memory. Anyone with the ID and read token can consume a new one-time message even without its encryption key or password; recipients can also save or copy the plaintext. Older v2 links lack a read token and retain their original ID-only retrieval behavior until they expire.
 
 Expiration is checked on every retrieval and never extended or shortened by reading. A scheduled cleanup removes up to 1,000 expired rows every 15 minutes; a backlog can delay physical cleanup without making expired messages readable. Deletion from active storage is not a promise of immediate erasure from provider backups: [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/) may retain earlier database states.
 
 ### Trust boundaries
 
 This is not an audited cryptographic product. You trust the code served by the operator, your browser, and your device. A compromised host could serve altered JavaScript; a compromised browser or extension could read the fragment or plaintext. Link-sharing services and browser history can retain complete links. Passwords are susceptible to offline guessing if an attacker obtains both the ciphertext and password salt; use a strong passphrase.
+
+AES-GCM already provides authenticated encryption. The password KDF uses the [OWASP-listed PBKDF2-HMAC-SHA-256 work factor](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2) and native Web Crypto. A memory-hard KDF such as Argon2id could improve resistance to password guessing, but would add a client implementation/WASM dependency and require a separately reviewed format migration. No claim of a cryptographic audit or guaranteed secure deletion is made. See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.
 
 ## Local development
 
@@ -56,7 +64,7 @@ npm run check       # TypeScript, deploy dry run, crypto and local-runtime tests
 npm audit           # dependency advisory check
 ```
 
-Tests exercise real Web Crypto and D1 in Cloudflare's local runtime, including 20 concurrent reads of a one-time message, expiration, request-size limits, malformed input, origin checks, rate limiting, and password retry.
+Tests exercise real Web Crypto and D1 in Cloudflare's local runtime, including 20 concurrent reads of a one-time message, authorization failures without deletion, v2 compatibility, expiration, request-size limits, malformed input, origin checks, HTTPS enforcement, rate limiting, and password retry.
 
 ## Deployment and GitHub updates
 
@@ -103,11 +111,14 @@ Creation is limited to 10 requests/minute and retrieval to 60 requests/minute pe
 
 **Version 2 is a storage/API/link-format change.** Existing version 1 KV data and links are not migrated or read by this version. For an existing v1 installation, keep its Worker/domain available until its messages expire before switching. This repository's `p.sgr.ski` deployment starts with a new database.
 
+**Current v3 links add read authorization without changing the AES-GCM envelope.** Migration `0002_read_tokens.sql` adds a nullable digest column. Existing v2 messages remain readable until their original expiration; all new creates require a digest. New links have the form `#v3:id:key-or-salt:read-token[:pwd2]`. Tabs opened before this update must refresh before creating another message. The migration is additive and runs before deploying the new Worker.
+
 ## Layout
 
 ```text
 src/worker.ts             HTTP API, security headers, D1 storage, cleanup
 web/                     HTML, CSS, browser application and crypto
+web/fonts/               Self-hosted DM Sans and its OFL license
 migrations/              Versioned D1 schema
 worker-configuration.d.ts Generated platform/binding types
 wrangler.jsonc           Cloudflare deployment configuration
@@ -118,3 +129,5 @@ test/                   Crypto and local-runtime regression tests
 ## License and attribution
 
 [MIT](LICENSE). Original project by [TheGreatAzizi](https://github.com/TheGreatAzizi); maintained deployment and improvements by [koljasagorski](https://github.com/koljasagorski). Original license attribution is preserved.
+
+The bundled DM Sans font is distributed under the [SIL Open Font License](web/fonts/LICENSE), sourced from `@fontsource-variable/dm-sans` 5.3.0.
