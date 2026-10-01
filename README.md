@@ -2,6 +2,8 @@
 
 Share encrypted, expiring text at **[p.sgr.ski](https://p.sgr.ski)**.
 
+Alternative address: [secure-pastebin.vwcampermieten.workers.dev](https://secure-pastebin.vwcampermieten.workers.dev). Use this if your DNS resolver has not picked up the custom domain yet. Share links keep the address on which they were created.
+
 [![CI](https://github.com/koljasagorski/Secure-Pastebin-Cloudflare-Worker/actions/workflows/ci.yml/badge.svg)](https://github.com/koljasagorski/Secure-Pastebin-Cloudflare-Worker/actions/workflows/ci.yml)
 
 A small Cloudflare Worker with browser-side encryption, optional password protection, and one-time retrieval. No account, analytics, third-party scripts, or external fonts are required. This maintained fork builds on [TheGreatAzizi's original project](https://github.com/TheGreatAzizi/Secure-Pastebin-Cloudflare-Worker).
