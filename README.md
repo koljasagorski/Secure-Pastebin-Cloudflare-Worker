@@ -1,3 +1,4 @@
+[![DevSponsors](https://devsponsors.github.io/assets/badges/sponsor.svg)](https://devsponsors.github.io)
 <p align="center">
   <img src="https://sp.theazizi.ir/favicon.svg" width="100" height="100" alt="Secure Pastebin Logo">
 </p>
