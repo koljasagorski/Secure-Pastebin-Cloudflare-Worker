@@ -4,6 +4,7 @@ import APP from '../web/app.browser.js';
 import CRYPTO from '../web/crypto.browser.js';
 import ICON from '../web/favicon.svg';
 import FONT from '../web/fonts/dm-sans.woff2';
+import CLOUDFLARE_BADGE from '../web/cloudflare-badge.png';
 
 const MAX_BODY = 96 * 1024;
 const MAX_CIPHERTEXT = 65536 + 16;
@@ -159,6 +160,7 @@ export default {
         '/index.html': [HTML, 'text/html; charset=utf-8'],
         '/style.css': [CSS, 'text/css; charset=utf-8'],
         '/font.woff2': [FONT, 'font/woff2'],
+        '/cloudflare-badge.png': [CLOUDFLARE_BADGE, 'image/png'],
         '/app.js': [APP, 'text/javascript; charset=utf-8'],
         '/crypto.js': [CRYPTO, 'text/javascript; charset=utf-8'],
         '/favicon.svg': [ICON, 'image/svg+xml'],

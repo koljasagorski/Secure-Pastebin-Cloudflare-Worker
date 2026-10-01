@@ -19,7 +19,7 @@ before(async () => {
         modulesRoot: resolve('dist'),
         modules: Object.fromEntries(readdirSync('dist')
           .filter(name => name === 'worker.js' || /^[a-f0-9]{40}-/.test(name))
-          .map(name => [name, { type: name === 'worker.js' ? 'esm' : name.endsWith('.woff2') ? 'data' : 'text', contents: readFileSync(resolve('dist', name), name.endsWith('.woff2') ? undefined : 'utf8') }])),
+          .map(name => [name, { type: name === 'worker.js' ? 'esm' : /\.(woff2|png)$/.test(name) ? 'data' : 'text', contents: readFileSync(resolve('dist', name), /\.(woff2|png)$/.test(name) ? undefined : 'utf8') }])),
       },
       env: {
         DB: { type: 'd1', id: 'local-test' },

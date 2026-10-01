@@ -27,5 +27,5 @@
     "traces": { "enabled": false }
   },
   "rules": [{ "type": "Text", "globs": ["**/*.html", "**/*.css", "**/*.svg", "**/*.browser.js"], "fallthrough": true },
-    { "type": "Data", "globs": ["**/*.woff2"], "fallthrough": true }]
+    { "type": "Data", "globs": ["**/*.woff2", "**/*.png"], "fallthrough": true }]
 }
