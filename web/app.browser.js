@@ -1,4 +1,4 @@
-import { encrypt, decrypt, encryptFile, decryptFile, parseFragment, createReadToken, encode, decode, MAX_PLAINTEXT, MAX_FILE } from '/crypto.js';
+import { encrypt, decrypt, encryptFile, decryptFile, authProof, parseFragment, createReadToken, encode, decode, MAX_PLAINTEXT, MAX_FILE } from '/crypto.js';
 
 const $ = id => document.getElementById(id);
 const views = ['createView', 'resultBox', 'openView', 'passwordPrompt', 'decryptView'];
@@ -107,7 +107,7 @@ $('skipLink').addEventListener('click', event => {
 $('enablePassword').addEventListener('change', () => {
   $('passwordWrapper').hidden = !$('enablePassword').checked;
   if ($('enablePassword').checked) $('passwordInput').focus();
-  else $('passwordInput').value = '';
+  else { $('passwordInput').value = ''; $('enableShort').checked = false; }
 });
 
 $('createView').addEventListener('submit', async event => {
@@ -119,6 +119,7 @@ $('createView').addEventListener('submit', async event => {
     expiresIn: Number($('expiresIn').value),
     burnAfterRead: $('burnAfterRead').checked,
     password: $('enablePassword').checked ? $('passwordInput').value : null,
+    short: $('enablePassword').checked && $('enableShort').checked,
   };
   const text = $('content').value;
   const file = selectedFile;
@@ -130,14 +131,16 @@ $('createView').addEventListener('submit', async event => {
     const access = await createReadToken();
     if (currentVersion !== viewVersion) return;
     $('btnText').textContent = 'Creating link…';
-    // A short link has no key in it, so it exists only for password-protected messages.
-    // The PBKDF2 salt is not secret and is stored so the short link can be opened.
+    // A short link has no key in it, so it exists only on request and only with a password.
+    // The server stores the public salt and a hash of a password-derived proof. It releases
+    // a short-link message only for a matching proof, so guessing a code gets nothing.
+    const proof = options.short ? await authProof(options.password, encrypted.secret) : null;
     const shared = {
       expiresIn: options.expiresIn,
       burnAfterRead: options.burnAfterRead,
       hasPassword: encrypted.hasPassword,
       readTokenHash: access.readTokenHash,
-      ...(encrypted.hasPassword ? { short: true, salt: encrypted.secret } : {}),
+      ...(proof ? { short: true, salt: encrypted.secret, authHash: proof.hash } : {}),
     };
     const result = file
       ? await uploadFile(encrypted.ciphertext, { ...shared, iv: encrypted.iv }, fraction => {
@@ -155,6 +158,7 @@ $('createView').addEventListener('submit', async event => {
     $('passwordNotice').hidden = !encrypted.hasPassword;
     $('content').value = '';
     $('passwordInput').value = '';
+    $('enableShort').checked = false;
     selectedFile = null;
     $('fileInput').value = '';
     updateFileMode();
@@ -201,7 +205,17 @@ $('openBtn').addEventListener('click', async () => {
   $('openView').setAttribute('aria-busy', 'true');
   try {
     // Never retrieve ciphertext on page load: link previews must not burn a paste.
-    const data = await api(currentLink.short ? `/api/short/${currentLink.short}` : `/api/read/${currentLink.id}`,
+    if (currentLink.short) {
+      // Short links first fetch only the public salt. The message is released after the password proof.
+      const { salt } = await api(`/api/short/${currentLink.short}`, {});
+      if (link !== currentLink) return;
+      pendingData = { locked: true, salt };
+      history.replaceState(null, '', '/');
+      setView('passwordPrompt');
+      $('decryptPassword').focus();
+      return;
+    }
+    const data = await api(`/api/read/${currentLink.id}`,
       currentLink.readToken ? { readToken: currentLink.readToken } : {});
     if (link !== currentLink) return;
     pendingData = data;
@@ -228,10 +242,19 @@ $('unlockForm').addEventListener('submit', async event => {
   $('decryptBtn').disabled = true;
   $('decryptBtnText').textContent = 'Decrypting…';
   $('unlockForm').setAttribute('aria-busy', 'true');
-  try { await reveal($('decryptPassword').value); }
-  catch {
+  try {
+    const password = $('decryptPassword').value;
+    if (pendingData.locked) {
+      // A wrong password fails here and leaves the message untouched on the server.
+      const { proof } = await authProof(password, pendingData.salt);
+      const data = await api(`/api/short/${currentLink.short}`, { proof });
+      if (link !== currentLink) return;
+      pendingData = data;
+    }
+    await reveal(password);
+  } catch {
     if (link !== currentLink) return;
-    $('passwordError').textContent = 'That password didn’t unlock the message. Check with the sender and try again in this tab.';
+    $('passwordError').textContent = 'That password didn’t unlock the message, or it has expired. Check with the sender and try again in this tab.';
     $('passwordError').hidden = false;
     $('decryptPassword').setAttribute('aria-invalid', 'true');
     $('decryptPassword').focus();

@@ -78,10 +78,15 @@
                 <span>Add a password</span>
                 <input id="enablePassword" type="checkbox" class="switch" aria-controls="passwordWrapper" aria-describedby="passwordHelp">
               </label>
-              <p id="passwordHelp" class="setting-help">Required to decrypt. Share it separately. Adds a short link you can remember.</p>
+              <p id="passwordHelp" class="setting-help">Required to decrypt. Share it separately.</p>
               <div id="passwordWrapper" class="password-field" hidden>
                 <label for="passwordInput" class="sr-only">Message password</label>
                 <input id="passwordInput" type="password" autocomplete="new-password" placeholder="At least 12 characters" aria-describedby="passwordHelp">
+                <label class="toggle-label short-toggle" for="enableShort">
+                  <span>Also create a short link</span>
+                  <input id="enableShort" type="checkbox" class="switch" aria-describedby="shortHelp">
+                </label>
+                <p id="shortHelp" class="setting-help">Easy to remember, but the password is then the only protection. Use a strong one.</p>
               </div>
             </div>
             <button id="createBtn" class="button primary-button" type="submit">

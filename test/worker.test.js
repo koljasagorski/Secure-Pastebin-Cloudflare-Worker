@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Miniflare } from 'miniflare';
-import { encrypt, decrypt, createReadToken, encryptFile, decryptFile, encode } from '../web/crypto.browser.js';
+import { encrypt, decrypt, createReadToken, encryptFile, decryptFile, authProof, encode } from '../web/crypto.browser.js';
 
 let mf, db, encrypted, access;
 let ip = 0;
@@ -259,36 +259,58 @@ test('cleanup removes expired files from R2 and D1', async () => {
   assert.equal(await db.prepare('SELECT id FROM pastes WHERE id = ?').bind(id).first(), null);
 });
 
-test('short links: password-only, 6 readable characters, work for text and files', async () => {
+function metaOf(response) {
+  return JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(response.headers.get('x-paste-meta').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+}
+
+test('short links: a code alone releases or burns nothing, the password proof does', async () => {
   const text = await encrypt('short link text', PASSWORD);
-  const created = await (await post('/api/create', payload({ encryptedData: text.encryptedData, hasPassword: true, short: true, salt: text.secret }))).json();
+  const auth = await authProof(PASSWORD, text.secret);
+  const created = await (await post('/api/create', payload({ encryptedData: text.encryptedData, hasPassword: true, burnAfterRead: true, short: true, salt: text.secret, authHash: auth.hash }))).json();
   assert.match(created.shortCode, /^[2-9a-hj-km-np-z]{6}$/);
-  const response = await post(`/api/short/${created.shortCode}`, {});
+  // Step 1 returns only the public salt, no ciphertext, and burns nothing.
+  const salt = await (await post(`/api/short/${created.shortCode}`, {})).json();
+  assert.deepEqual(Object.keys(salt), ['salt']);
+  assert.equal(salt.salt, text.secret);
+  // Wrong or malformed proofs fail without burning the one-time paste.
+  const wrong = await authProof('another password!!', text.secret);
+  assert.equal((await post(`/api/short/${created.shortCode}`, { proof: wrong.proof })).status, 404);
+  assert.equal((await post(`/api/short/${created.shortCode}`, { proof: auth.hash })).status, 404);
+  assert.equal((await post(`/api/short/${created.shortCode}`, { proof: 'bad' })).status, 400);
+  const response = await post(`/api/short/${created.shortCode}`, { proof: auth.proof });
   assert.equal(response.status, 200);
   const paste = await response.json();
-  assert.equal(paste.salt, text.secret);
   assert.equal(await decrypt(paste.data, paste.salt, PASSWORD), 'short link text');
-  assert.equal((await decrypt(paste.data, paste.salt, PASSWORD).then(() => 1)), 1);
-  await assert.rejects(decrypt(paste.data, paste.salt, 'wrong password!!'));
+  assert.equal((await post(`/api/short/${created.shortCode}`, { proof: auth.proof })).status, 404);
+});
 
-  const file = await upload({ short: true, salt: undefined }, undefined, PASSWORD);
-  assert.equal(file.response.status, 400); // salt missing
+test('short-link salt lookups do not reveal which codes exist', async () => {
+  const unknown = await (await post('/api/short/abcdef', {})).json();
+  assert.match(unknown.salt, /^[A-Za-z0-9_-]{22}$/);
+  assert.deepEqual(await (await post('/api/short/abcdef', {})).json(), unknown);
+});
+
+test('short links work for files too', async () => {
   const sealed = await encryptFile(new File(['abc'], 'a.bin'), PASSWORD);
-  const meta = { iv: sealed.iv, expiresIn: 3600, burnAfterRead: true, hasPassword: true, readTokenHash: access.readTokenHash, short: true, salt: sealed.secret };
+  const auth = await authProof(PASSWORD, sealed.secret);
+  const meta = { iv: sealed.iv, expiresIn: 3600, burnAfterRead: true, hasPassword: true, readTokenHash: access.readTokenHash, short: true, salt: sealed.secret, authHash: auth.hash };
   const up = await mf.dispatchFetch('https://paste.test/api/upload', { method: 'POST', body: sealed.ciphertext,
     headers: { 'Content-Type': 'application/octet-stream', 'CF-Connecting-IP': '192.0.2.213', 'X-Paste-Meta': encode(new TextEncoder().encode(JSON.stringify(meta))) } });
   const { shortCode } = await up.json();
-  const first = await post(`/api/short/${shortCode}`, {});
+  const wrong = await authProof('another password!!', sealed.secret);
+  assert.equal((await post(`/api/short/${shortCode}`, { proof: wrong.proof })).status, 404);
+  const first = await post(`/api/short/${shortCode}`, { proof: auth.proof });
   assert.equal(first.status, 200);
-  const info = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(first.headers.get('x-paste-meta').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+  const info = metaOf(first);
   assert.equal((await decryptFile(info.iv, await first.arrayBuffer(), info.salt, PASSWORD)).name, 'a.bin');
-  assert.equal((await post(`/api/short/${shortCode}`, {})).status, 404);
+  assert.equal((await post(`/api/short/${shortCode}`, { proof: auth.proof })).status, 404);
 });
 
-test('short links need a password and a salt; unknown or malformed codes are rejected', async () => {
-  assert.equal((await post('/api/create', payload({ short: true, salt: encrypted.secret }))).status, 400);
-  assert.equal((await post('/api/create', payload({ hasPassword: true, short: true }))).status, 400);
-  assert.equal((await post('/api/short/abcdef', {})).status, 404);
+test('short links need a password, a salt, and a proof hash; malformed codes are rejected', async () => {
+  const auth = await authProof(PASSWORD, encrypted.secret);
+  assert.equal((await post('/api/create', payload({ short: true, salt: encrypted.secret, authHash: auth.hash }))).status, 400);
+  assert.equal((await post('/api/create', payload({ hasPassword: true, short: true, authHash: auth.hash }))).status, 400);
+  assert.equal((await post('/api/create', payload({ hasPassword: true, short: true, salt: encrypted.secret }))).status, 400);
   assert.equal((await post('/api/short/ab0def', {})).status, 404);
   assert.equal((await mf.dispatchFetch('https://paste.test/abcdef')).status, 200);
   assert.equal((await mf.dispatchFetch('https://paste.test/ABCDEF')).status, 200);

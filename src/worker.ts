@@ -112,18 +112,19 @@ async function readBody(request: Request, maxBytes = MAX_BODY): Promise<unknown>
   catch { throw new HttpError(400, 'Invalid JSON'); }
 }
 
-type Options = { expiresIn: number; burnAfterRead: boolean; hasPassword: boolean; readTokenHash: string; short: boolean; salt: string | null };
+type Options = { expiresIn: number; burnAfterRead: boolean; hasPassword: boolean; readTokenHash: string; short: boolean; salt: string | null; authHash: string | null };
 
 function options(body: Record<string, unknown>, ttl: Set<number>): Options {
-  const { expiresIn, burnAfterRead, hasPassword, readTokenHash, short, salt } = body;
+  const { expiresIn, burnAfterRead, hasPassword, readTokenHash, short, salt, authHash } = body;
   if (typeof expiresIn !== 'number' || !ttl.has(expiresIn)) throw new HttpError(400, 'Invalid expiration');
   if (typeof burnAfterRead !== 'boolean' || typeof hasPassword !== 'boolean') throw new HttpError(400, 'Invalid options');
   if (!base64Bytes(readTokenHash, 32, 32)) throw new HttpError(400, 'A read token is required. Refresh the page and try again.');
   if (short !== undefined && typeof short !== 'boolean') throw new HttpError(400, 'Invalid options');
   // A short link has no key in it, so it is only offered together with a password.
-  // The PBKDF2 salt is public and must be stored for short-link retrieval.
-  if (short && (!hasPassword || !base64Bytes(salt, 16, 16))) throw new HttpError(400, 'Short links require a password');
-  return { expiresIn, burnAfterRead, hasPassword, readTokenHash, short: short === true, salt: short ? salt as string : null };
+  // The PBKDF2 salt is public. authHash is the SHA-256 of a password-derived proof: the server
+  // releases (or burns) a short-link paste only for a matching proof, never for the code alone.
+  if (short && (!hasPassword || !base64Bytes(salt, 16, 16) || !base64Bytes(authHash, 32, 32))) throw new HttpError(400, 'Short links require a password');
+  return { expiresIn, burnAfterRead, hasPassword, readTokenHash, short: short === true, salt: short ? salt as string : null, authHash: short ? authHash as string : null };
 }
 
 async function insert(env: Env, id: string, kind: Paste['kind'], envelope: object, o: Options) {
@@ -132,8 +133,8 @@ async function insert(env: Env, id: string, kind: Paste['kind'], envelope: objec
   for (let attempt = 0; attempt < 5; attempt++) {
     const code = o.short ? shortCode() : null;
     try {
-      await env.DB.prepare('INSERT INTO pastes (id, kind, encrypted_data, created, expires_at, burn_after_read, has_password, read_token_hash, salt, short_code) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .bind(id, kind, JSON.stringify(envelope), created, expiresAt, Number(o.burnAfterRead), Number(o.hasPassword), o.readTokenHash, o.salt, code).run();
+      await env.DB.prepare('INSERT INTO pastes (id, kind, encrypted_data, created, expires_at, burn_after_read, has_password, read_token_hash, salt, short_code, auth_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .bind(id, kind, JSON.stringify(envelope), created, expiresAt, Number(o.burnAfterRead), Number(o.hasPassword), o.readTokenHash, o.salt, code, o.authHash).run();
       return { id, expiresAt, ...(code ? { shortCode: code } : {}) };
     } catch (error) {
       if (!o.short || !/UNIQUE/i.test(String(error))) throw error;
@@ -200,8 +201,18 @@ async function read(request: Request, env: Env, ctx: ExecutionContext, short: bo
   if (!object(body)) throw new HttpError(400, 'Invalid request');
   let paste: Paste | null;
   if (short) {
-    // The short code is the only credential here; the password protects the content.
-    paste = await take(env, 'short_code = ?', [key]);
+    if (body.proof === undefined) {
+      // Step 1: the public salt, so the browser can derive its proof. Unknown or expired codes get a
+      // deterministic fake salt, so this answer does not reveal which codes exist.
+      const row = await env.DB.prepare('SELECT salt FROM pastes WHERE short_code = ? AND auth_hash IS NOT NULL AND expires_at > ?')
+        .bind(key, Date.now()).first<{ salt: string }>();
+      const fake = toBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('salt:' + key))).subarray(0, 16));
+      return json({ salt: row?.salt ?? fake });
+    }
+    // Step 2: only a matching proof releases or burns anything. Wrong guesses leave the paste untouched.
+    if (!base64Bytes(body.proof, 32, 32)) throw new HttpError(400, 'Invalid proof');
+    const authHash = toBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', fromBase64Url(body.proof))));
+    paste = await take(env, 'short_code = ? AND auth_hash = ?', [key, authHash]);
   } else {
     let tokenHash: string | null = null;
     if (body.readToken !== undefined) {

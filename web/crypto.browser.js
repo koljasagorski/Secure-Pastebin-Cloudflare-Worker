@@ -46,6 +46,19 @@ async function openKey(secret, password) {
     : derive(password, bytes);
 }
 
+// Proves knowledge of the password to the server without revealing it or the encryption key.
+// It uses a separate PBKDF2 domain, so it cannot be turned into the AES key. The server stores only its SHA-256.
+export async function authProof(password, salt) {
+  const material = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const domain = new TextEncoder().encode('short-link-auth');
+  const saltBytes = decode(salt);
+  const input = new Uint8Array(saltBytes.length + domain.length);
+  input.set(saltBytes);
+  input.set(domain, saltBytes.length);
+  const proof = new Uint8Array(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: input, iterations: ITERATIONS, hash: 'SHA-256' }, material, 256));
+  return { proof: encode(proof), hash: encode(await crypto.subtle.digest('SHA-256', proof)) };
+}
+
 export async function encrypt(text, password = null) {
   const bytes = new TextEncoder().encode(text);
   if (!text.trim()) throw new Error('Please enter content to encrypt');
