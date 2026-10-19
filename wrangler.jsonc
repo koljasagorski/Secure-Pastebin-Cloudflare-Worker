@@ -15,6 +15,7 @@
     "database_id": "cdb92ac2-0347-465f-9738-4770847195b0",
     "migrations_dir": "migrations"
   }],
+  "r2_buckets": [{ "binding": "FILES", "bucket_name": "secure-pastebin-files", "jurisdiction": "eu" }],
   "ratelimits": [
     { "name": "CREATE_LIMITER", "namespace_id": "13995485401", "simple": { "limit": 10, "period": 60 } },
     { "name": "READ_LIMITER", "namespace_id": "13995485402", "simple": { "limit": 60, "period": 60 } }

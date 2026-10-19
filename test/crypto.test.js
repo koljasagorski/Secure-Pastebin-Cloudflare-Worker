@@ -70,3 +70,19 @@ test('v3 links carry an independent read token and only its SHA-256 digest is st
   }
   assert.throws(() => parseFragment('x'.repeat(257)));
 });
+
+test('file encryption keeps name, type, and bytes; password and wrong key behave', async () => {
+  const { encryptFile, decryptFile } = await import('../web/crypto.browser.js');
+  const bytes = new Uint8Array(70000);
+  for (let i = 0; i < bytes.length; i += 65536) crypto.getRandomValues(bytes.subarray(i, i + 65536));
+  const sealed = await encryptFile(new File([bytes], 'rändom.bin', { type: 'application/x-test' }));
+  const opened = await decryptFile(sealed.iv, sealed.ciphertext, sealed.secret);
+  assert.equal(opened.name, 'rändom.bin');
+  assert.equal(opened.type, 'application/x-test');
+  assert.deepEqual(opened.data, bytes);
+  const locked = await encryptFile(new File(['x'], 'x'), 'a long enough password');
+  assert.equal((await decryptFile(locked.iv, locked.ciphertext, locked.secret, 'a long enough password')).name, 'x');
+  await assert.rejects(decryptFile(locked.iv, locked.ciphertext, locked.secret, 'another long password'));
+  await assert.rejects(encryptFile(new File([], 'empty')));
+  await assert.rejects(encryptFile(new File(['x'], 'x'), 'short'));
+});

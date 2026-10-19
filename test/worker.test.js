@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { Miniflare } from 'miniflare';
-import { encrypt, decrypt, createReadToken } from '../web/crypto.browser.js';
+import { encrypt, decrypt, createReadToken, encryptFile, decryptFile, encode } from '../web/crypto.browser.js';
 
 let mf, db, encrypted, access;
 let ip = 0;
@@ -23,6 +23,7 @@ before(async () => {
       },
       env: {
         DB: { type: 'd1', id: 'local-test' },
+        FILES: { type: 'r2', name: 'files' },
         ...Object.fromEntries(config.ratelimits.map(({ name, namespace_id, simple }) => [name, { type: 'rate-limit', namespace: namespace_id, simple }])),
       },
     },
@@ -189,4 +190,107 @@ test('creation rate limit returns 429 and Retry-After', async () => {
   for (let i = 0; i < 11; i++) statuses.push(await post('/api/create', payload(), { 'CF-Connecting-IP': '192.0.2.250' }));
   assert.equal(statuses.at(-1).status, 429);
   assert.equal(statuses.at(-1).headers.get('retry-after'), '60');
+});
+
+const PASSWORD = 'correct horse battery';
+async function upload(options = {}, file = new File(['file bytes \u00fc'], 'note \u00fc.txt', { type: 'text/plain' }), password = null) {
+  const sealed = await encryptFile(file, password);
+  const meta = { iv: sealed.iv, expiresIn: 86400, burnAfterRead: false, hasPassword: sealed.hasPassword, readTokenHash: access.readTokenHash, ...options };
+  const response = await mf.dispatchFetch('https://paste.test/api/upload', {
+    method: 'POST', body: sealed.ciphertext,
+    headers: { 'Content-Type': 'application/octet-stream', 'CF-Connecting-IP': `192.0.2.${++ip}`,
+      'X-Paste-Meta': encode(new TextEncoder().encode(JSON.stringify(meta))), ...options.headers },
+  });
+  return { response, sealed };
+}
+async function download(id) {
+  const response = await post(`/api/read/${id}`, { readToken: access.readToken });
+  if (response.status !== 200) return { response };
+  const meta = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(response.headers.get('x-paste-meta').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+  return { response, meta, bytes: await response.arrayBuffer() };
+}
+
+test('file round trip: ciphertext in R2, name and type encrypted, plaintext never stored', async () => {
+  const { response, sealed } = await upload();
+  assert.equal(response.status, 201);
+  const { id } = await response.json();
+  const row = await db.prepare('SELECT * FROM pastes WHERE id = ?').bind(id).first();
+  assert.equal(row.kind, 'file');
+  assert.ok(!JSON.stringify(row).includes('note'));
+  const stored = await (await mf.getR2Bucket('FILES')).get(id);
+  assert.ok(stored);
+  const { response: read, meta, bytes } = await download(id);
+  assert.equal(read.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(meta.iv, sealed.iv);
+  const file = await decryptFile(meta.iv, bytes, sealed.secret);
+  assert.equal(file.name, 'note \u00fc.txt');
+  assert.equal(new TextDecoder().decode(file.data), 'file bytes \u00fc');
+  assert.equal((await download(id)).response.status, 200);
+});
+
+test('burn-after-read file: one retrieval, then row and R2 object are gone', async () => {
+  const { id } = await (await upload({ burnAfterRead: true })).response.json();
+  const results = await Promise.all(Array.from({ length: 10 }, () => download(id)));
+  assert.equal(results.filter(r => r.response.status === 200).length, 1);
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(await (await mf.getR2Bucket('FILES')).get(id), null);
+});
+
+test('file uploads accept only 1 hour, 1 day, and 48 hours and reject bad requests', async () => {
+  assert.equal((await upload({ expiresIn: 172800 })).response.status, 201);
+  for (const expiresIn of [604800, 2592000, 60]) assert.equal((await upload({ expiresIn })).response.status, 400);
+  assert.equal((await upload({ readTokenHash: 'x' })).response.status, 400);
+  assert.equal((await upload({ short: true })).response.status, 400);
+  assert.equal((await upload({ headers: { 'X-Paste-Meta': '!' } })).response.status, 400);
+  const oversize = await mf.dispatchFetch('https://paste.test/api/upload', {
+    method: 'POST', headers: { 'Content-Type': 'application/octet-stream', 'X-Paste-Meta': 'e30', 'CF-Connecting-IP': '192.0.2.211' }, body: new Uint8Array(100_000_001),
+  });
+  assert.equal(oversize.status, 413);
+  const json = await mf.dispatchFetch('https://paste.test/api/upload', { method: 'POST', headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '192.0.2.212' }, body: '{}' });
+  assert.equal(json.status, 415);
+});
+
+test('cleanup removes expired files from R2 and D1', async () => {
+  const { id } = await (await upload()).response.json();
+  await db.prepare('UPDATE pastes SET expires_at = ? WHERE id = ?').bind(Date.now() - 1, id).run();
+  assert.equal((await download(id)).response.status, 404);
+  await (await mf.getWorker()).scheduled({ cron: '*/15 * * * *' });
+  assert.equal(await (await mf.getR2Bucket('FILES')).get(id), null);
+  assert.equal(await db.prepare('SELECT id FROM pastes WHERE id = ?').bind(id).first(), null);
+});
+
+test('short links: password-only, 6 readable characters, work for text and files', async () => {
+  const text = await encrypt('short link text', PASSWORD);
+  const created = await (await post('/api/create', payload({ encryptedData: text.encryptedData, hasPassword: true, short: true, salt: text.secret }))).json();
+  assert.match(created.shortCode, /^[2-9a-hj-km-np-z]{6}$/);
+  const response = await post(`/api/short/${created.shortCode}`, {});
+  assert.equal(response.status, 200);
+  const paste = await response.json();
+  assert.equal(paste.salt, text.secret);
+  assert.equal(await decrypt(paste.data, paste.salt, PASSWORD), 'short link text');
+  assert.equal((await decrypt(paste.data, paste.salt, PASSWORD).then(() => 1)), 1);
+  await assert.rejects(decrypt(paste.data, paste.salt, 'wrong password!!'));
+
+  const file = await upload({ short: true, salt: undefined }, undefined, PASSWORD);
+  assert.equal(file.response.status, 400); // salt missing
+  const sealed = await encryptFile(new File(['abc'], 'a.bin'), PASSWORD);
+  const meta = { iv: sealed.iv, expiresIn: 3600, burnAfterRead: true, hasPassword: true, readTokenHash: access.readTokenHash, short: true, salt: sealed.secret };
+  const up = await mf.dispatchFetch('https://paste.test/api/upload', { method: 'POST', body: sealed.ciphertext,
+    headers: { 'Content-Type': 'application/octet-stream', 'CF-Connecting-IP': '192.0.2.213', 'X-Paste-Meta': encode(new TextEncoder().encode(JSON.stringify(meta))) } });
+  const { shortCode } = await up.json();
+  const first = await post(`/api/short/${shortCode}`, {});
+  assert.equal(first.status, 200);
+  const info = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(first.headers.get('x-paste-meta').replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0))));
+  assert.equal((await decryptFile(info.iv, await first.arrayBuffer(), info.salt, PASSWORD)).name, 'a.bin');
+  assert.equal((await post(`/api/short/${shortCode}`, {})).status, 404);
+});
+
+test('short links need a password and a salt; unknown or malformed codes are rejected', async () => {
+  assert.equal((await post('/api/create', payload({ short: true, salt: encrypted.secret }))).status, 400);
+  assert.equal((await post('/api/create', payload({ hasPassword: true, short: true }))).status, 400);
+  assert.equal((await post('/api/short/abcdef', {})).status, 404);
+  assert.equal((await post('/api/short/ab0def', {})).status, 404);
+  assert.equal((await mf.dispatchFetch('https://paste.test/abcdef')).status, 200);
+  assert.equal((await mf.dispatchFetch('https://paste.test/ABCDEF')).status, 200);
+  assert.equal((await mf.dispatchFetch('https://paste.test/abcde')).status, 404);
 });

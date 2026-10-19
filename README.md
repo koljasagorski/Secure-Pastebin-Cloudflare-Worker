@@ -19,6 +19,11 @@ The interface focuses on writing and sharing: a large editor, a compact settings
 3. Select **Create private link** and send the complete link to the recipient. Share any password separately.
 4. The recipient selects **Open message**, then enters the password if required.
 
+### Files and short links
+
+- **Files:** instead of text you can attach one file of up to **100 MB** (the Workers request body limit, sent in a single request, minus about 2 KB of overhead). The browser encrypts it with AES-256-GCM; name and type are encrypted too. Ciphertext is stored in **Cloudflare R2** (EU jurisdiction), never plaintext. Files are kept for **at most 48 hours** (1 hour, 1 day, or 2 days). Expiry is enforced on every read, the 15-minute cron deletes expired objects from R2 and D1, and an R2 lifecycle rule (`expire-after-2d`) removes anything the cron might miss, such as a failed upload.
+- **Short link:** with a password, you also get a link like `p.sgr.ski/k7m2xq` (six characters, no look-alikes). It carries no key, so the **password is mandatory** and does all the protecting. The server stores the public PBKDF2 salt to make this work; it never sees the password or key. Trade-off: anyone who guesses a code can fetch the ciphertext (and consume a burn-after-reading message) and then guess the password offline. About 29 bits of code space plus rate limiting make blind guessing impractical, but use a strong password. The long link still works without a password.
+
 Whitespace, code, and Unicode text are preserved. Message text is displayed as text, never rendered as HTML. Losing the complete link means losing access.
 
 ## Encryption and privacy
@@ -27,7 +32,7 @@ Whitespace, code, and Unicode text are preserved. Message text is displayed as t
 - Without a password, the browser generates a random key. With a password, **PBKDF2-HMAC-SHA-256 with 600,000 iterations** derives the key from a random 16-byte salt.
 - The key, or password salt, stays in the URL fragment after `#`. Browsers do not include that fragment in HTTP requests. Passwords and plaintext are never submitted by the application.
 - New links also contain an **independent random 256-bit read token**. Creation sends only its SHA-256 digest. Retrieval sends the token in the POST body over HTTPS; the server checks its digest within the same SQL statement that reads or deletes the message. Knowing the ID or stored digest is insufficient to retrieve or consume a new message. The read token is separate from the encryption key and cannot decrypt the content.
-- Cloudflare D1 stores ciphertext, a random ID, creation/expiration timestamps, the password/burn flags, and the read-token digest. The production database uses Cloudflare's EU jurisdiction.
+- Cloudflare D1 stores ciphertext (files: R2 does, D1 keeps only the IV), a random ID, creation/expiration timestamps, the password/burn flags, and the read-token digest. The production database uses Cloudflare's EU jurisdiction.
 - Public HTTP requests redirect to HTTPS. Responses use `Cache-Control: no-store`, CSP without inline scripts/styles, Trusted Types enforcement in supporting browsers, cross-origin isolation, `Referrer-Policy: no-referrer`, and anti-framing headers. Clipboard reading and unused device APIs are disabled; copying still works.
 - After successful retrieval, the app removes the fragment from the current address/history entry, including while waiting for a password. It clears message/link fields on navigation and reloads restored back/forward-cache pages. These measures reduce persistence; they cannot erase earlier copies from browser sync, extensions, memory, or sharing services. The only application preference in local storage is the selected theme.
 - The application logs only a generic failure event, with invocation logs and tracing disabled. This does **not** mean the hosting provider has no network metadata or operational logs.
@@ -45,6 +50,13 @@ Expiration is checked on every retrieval and never extended or shortened by read
 This is not an audited cryptographic product. You trust the code served by the operator, your browser, and your device. A compromised host could serve altered JavaScript; a compromised browser or extension could read the fragment or plaintext. Link-sharing services and browser history can retain complete links. Passwords are susceptible to offline guessing if an attacker obtains both the ciphertext and password salt; use a strong passphrase.
 
 AES-GCM already provides authenticated encryption. The password KDF uses the [OWASP-listed PBKDF2-HMAC-SHA-256 work factor](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2) and native Web Crypto. A memory-hard KDF such as Argon2id could improve resistance to password guessing, but would add a client implementation/WASM dependency and require a separately reviewed format migration. No claim of a cryptographic audit or guaranteed secure deletion is made. See [SECURITY.md](SECURITY.md) for the threat model and reporting guidance.
+
+## Handover notes
+
+- Bindings: D1 `DB`, R2 bucket `FILES` = `secure-pastebin-files` (EU, lifecycle rule `expire-after-2d`), two rate limiters. Migration `0003` adds `kind`, `salt`, `short_code`.
+- Endpoints: `POST /api/create` (text), `POST /api/upload` (raw ciphertext, options in the `X-Paste-Meta` header), `POST /api/read/:id` (read token), `POST /api/short/:code`. Short URLs `/<6 chars>` serve the same HTML.
+- Burn-after-read files: the D1 row is deleted atomically first, then the R2 object is streamed and deleted afterwards.
+- The upload limit equals the Workers plan limit (100 MB on Free/Pro). It would need chunking or direct R2 uploads to go higher.
 
 ## Local development
 
