@@ -288,6 +288,10 @@ test('short-link salt lookups do not reveal which codes exist', async () => {
   const unknown = await (await post('/api/short/abcdef', {})).json();
   assert.match(unknown.salt, /^[A-Za-z0-9_-]{22}$/);
   assert.deepEqual(await (await post('/api/short/abcdef', {})).json(), unknown);
+  // The fake salt is keyed: it must not equal anything an outsider can compute from the code.
+  const unkeyed = encode(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('salt:abcdef'))).subarray(0, 16));
+  assert.notEqual(unknown.salt, unkeyed);
+  assert.notEqual((await (await post('/api/short/abcdeg', {})).json()).salt, unknown.salt);
 });
 
 test('short links work for files too', async () => {

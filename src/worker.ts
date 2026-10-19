@@ -203,10 +203,14 @@ async function read(request: Request, env: Env, ctx: ExecutionContext, short: bo
   if (short) {
     if (body.proof === undefined) {
       // Step 1: the public salt, so the browser can derive its proof. Unknown or expired codes get a
-      // deterministic fake salt, so this answer does not reveal which codes exist.
+      // keyed fake salt (HMAC with a server-side random key), which outsiders cannot recompute,
+      // so this answer does not reveal which codes exist.
       const row = await env.DB.prepare('SELECT salt FROM pastes WHERE short_code = ? AND auth_hash IS NOT NULL AND expires_at > ?')
         .bind(key, Date.now()).first<{ salt: string }>();
-      const fake = toBase64Url(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode('salt:' + key))).subarray(0, 16));
+      const secret = await env.DB.prepare("SELECT value FROM server_secrets WHERE name = 'short_salt'").first<{ value: string }>();
+      if (!secret) throw new Error('missing server secret');
+      const hmac = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret.value), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+      const fake = toBase64Url(new Uint8Array(await crypto.subtle.sign('HMAC', hmac, new TextEncoder().encode(key))).subarray(0, 16));
       return json({ salt: row?.salt ?? fake });
     }
     // Step 2: only a matching proof releases or burns anything. Wrong guesses leave the paste untouched.
